@@ -446,6 +446,9 @@ void IncrementalMapperController::Reconstruct(
         reconstruction_manager_->Delete(reconstruction_idx);
         break;
       }
+      
+      std::cout << "  => Running initial global bundle adjustment at registered images: "
+                << reconstruction.NumRegImages() << std::endl;
 
       AdjustGlobalBundle(*options_, &mapper);
       FilterPoints(*options_, &mapper);
@@ -472,124 +475,121 @@ void IncrementalMapperController::Reconstruct(
 
     Callback(INITIAL_IMAGE_PAIR_REG_CALLBACK);
 
-    ////////////////////////////////////////////////////////////////////////////
-    // Incremental mapping
-    ////////////////////////////////////////////////////////////////////////////
+        ////////////////////////////////////////////////////////////////////////////
+        // Incremental mapping
+        ////////////////////////////////////////////////////////////////////////////
 
-    size_t snapshot_prev_num_reg_images = reconstruction.NumRegImages();
-    size_t ba_prev_num_reg_images = reconstruction.NumRegImages();
-    size_t ba_prev_num_points = reconstruction.NumPoints3D();
+        size_t snapshot_prev_num_reg_images = reconstruction.NumRegImages();
 
-    bool reg_next_success = true;
-    bool prev_reg_next_success = true;
-    while (reg_next_success) {
-      BlockIfPaused();
-      if (IsStopped()) {
-        break;
-      }
+        // Last time global refinement actually ran.
+        size_t last_global_ba_num_reg_images = reconstruction.NumRegImages();
 
-      reg_next_success = false;
+        // Interval gap, e.g. 10 or 100.
+        const size_t global_ba_interval =
+            static_cast<size_t>(options_->ba_global_images_freq);
 
-      const std::vector<image_t> next_images =
-          mapper.FindNextImages(options_->Mapper());
+        // Next allowed global BA checkpoint after the initial pair BA.
+        size_t next_global_ba_num_reg_images =
+            reconstruction.NumRegImages() + global_ba_interval;
 
-      if (next_images.empty()) {
-        break;
-      }
-
-      for (size_t reg_trial = 0; reg_trial < next_images.size(); ++reg_trial) {
-        const image_t next_image_id = next_images[reg_trial];
-        const Image& next_image = reconstruction.Image(next_image_id);
-
-        PrintHeading1(StringPrintf("Registering image #%d (%d)", next_image_id,
-                                   reconstruction.NumRegImages() + 1));
-
-        std::cout << StringPrintf("  => Image sees %d / %d points",
-                                  next_image.NumVisiblePoints3D(),
-                                  next_image.NumObservations())
-                  << std::endl;
-
-        reg_next_success =
-            mapper.RegisterNextImage(options_->Mapper(), next_image_id);
-
-        if (reg_next_success) {
-          TriangulateImage(*options_, next_image, &mapper);
-          IterativeLocalRefinement(*options_, next_image_id, &mapper);
-
-          if (reconstruction.NumRegImages() >=
-                  options_->ba_global_images_ratio * ba_prev_num_reg_images ||
-              reconstruction.NumRegImages() >=
-                  options_->ba_global_images_freq + ba_prev_num_reg_images ||
-              reconstruction.NumPoints3D() >=
-                  options_->ba_global_points_ratio * ba_prev_num_points ||
-              reconstruction.NumPoints3D() >=
-                  options_->ba_global_points_freq + ba_prev_num_points) {
-            IterativeGlobalRefinement(*options_, &mapper);
-            ba_prev_num_points = reconstruction.NumPoints3D();
-            ba_prev_num_reg_images = reconstruction.NumRegImages();
+        bool reg_next_success = true;
+        while (reg_next_success) {
+          BlockIfPaused();
+          if (IsStopped()) {
+            break;
           }
 
-          if (options_->extract_colors) {
-            ExtractColors(image_path_, next_image_id, &reconstruction);
+          reg_next_success = false;
+
+          const std::vector<image_t> next_images =
+              mapper.FindNextImages(options_->Mapper());
+
+          if (next_images.empty()) {
+            break;
           }
 
-          if (options_->snapshot_images_freq > 0 &&
-              reconstruction.NumRegImages() >=
-                  options_->snapshot_images_freq +
-                      snapshot_prev_num_reg_images) {
-            snapshot_prev_num_reg_images = reconstruction.NumRegImages();
-            WriteSnapshot(reconstruction, options_->snapshot_path);
+          for (size_t reg_trial = 0; reg_trial < next_images.size(); ++reg_trial) {
+            const image_t next_image_id = next_images[reg_trial];
+            const Image& next_image = reconstruction.Image(next_image_id);
+
+            PrintHeading1(StringPrintf("Registering image #%d (%d)", next_image_id,
+                                      reconstruction.NumRegImages() + 1));
+
+            std::cout << StringPrintf("  => Image sees %d / %d points",
+                                      next_image.NumVisiblePoints3D(),
+                                      next_image.NumObservations())
+                      << std::endl;
+
+            reg_next_success =
+                mapper.RegisterNextImage(options_->Mapper(), next_image_id);
+
+            if (reg_next_success) {
+              TriangulateImage(*options_, next_image, &mapper);
+              IterativeLocalRefinement(*options_, next_image_id, &mapper);
+
+              if (reconstruction.NumRegImages() >= next_global_ba_num_reg_images) {
+                std::cout
+                    << "  => Running scheduled global refinement at registered images: "
+                    << reconstruction.NumRegImages() << std::endl;
+
+                IterativeGlobalRefinement(*options_, &mapper);
+                last_global_ba_num_reg_images = reconstruction.NumRegImages();
+
+                while (next_global_ba_num_reg_images <=
+                      reconstruction.NumRegImages()) {
+                  next_global_ba_num_reg_images += global_ba_interval;
+                }
+              }
+
+              if (options_->extract_colors) {
+                ExtractColors(image_path_, next_image_id, &reconstruction);
+              }
+
+              if (options_->snapshot_images_freq > 0 &&
+                  reconstruction.NumRegImages() >=
+                      options_->snapshot_images_freq +
+                          snapshot_prev_num_reg_images) {
+                snapshot_prev_num_reg_images = reconstruction.NumRegImages();
+                WriteSnapshot(reconstruction, options_->snapshot_path);
+              }
+
+              Callback(NEXT_IMAGE_REG_CALLBACK);
+              break;
+            } else {
+              std::cout << "  => Could not register, trying another image."
+                        << std::endl;
+
+              const size_t kMinNumInitialRegTrials = 30;
+              if (reg_trial >= kMinNumInitialRegTrials &&
+                  reconstruction.NumRegImages() <
+                      static_cast<size_t>(options_->min_model_size)) {
+                break;
+              }
+            }
           }
 
-          Callback(NEXT_IMAGE_REG_CALLBACK);
-
-          break;
-        } else {
-          std::cout << "  => Could not register, trying another image."
-                    << std::endl;
-
-          // If initial pair fails to continue for some time,
-          // abort and try different initial pair.
-          const size_t kMinNumInitialRegTrials = 30;
-          if (reg_trial >= kMinNumInitialRegTrials &&
-              reconstruction.NumRegImages() <
-                  static_cast<size_t>(options_->min_model_size)) {
+          const size_t max_model_overlap =
+              static_cast<size_t>(options_->max_model_overlap);
+          if (mapper.NumSharedRegImages() >= max_model_overlap) {
             break;
           }
         }
-      }
 
-      const size_t max_model_overlap =
-          static_cast<size_t>(options_->max_model_overlap);
-      if (mapper.NumSharedRegImages() >= max_model_overlap) {
-        break;
-      }
+        if (IsStopped()) {
+          const bool kDiscardReconstruction = false;
+          mapper.EndReconstruction(kDiscardReconstruction);
+          break;
+        }
 
-      // If no image could be registered, try a single final global iterative
-      // bundle adjustment and try again to register one image. If this fails
-      // once, then exit the incremental mapping.
-      if (!reg_next_success && prev_reg_next_success) {
-        reg_next_success = true;
-        prev_reg_next_success = false;
-        IterativeGlobalRefinement(*options_, &mapper);
-      } else {
-        prev_reg_next_success = reg_next_success;
-      }
-    }
+        // Only run final global BA if the last incremental BA was not global.
+        if (reconstruction.NumRegImages() >= 2 &&
+            reconstruction.NumRegImages() != last_global_ba_num_reg_images) {
+          std::cout << "  => Running final global refinement at registered images: "
+                    << reconstruction.NumRegImages() << std::endl;
 
-    if (IsStopped()) {
-      const bool kDiscardReconstruction = false;
-      mapper.EndReconstruction(kDiscardReconstruction);
-      break;
-    }
-
-    // Only run final global BA, if last incremental BA was not global.
-    if (reconstruction.NumRegImages() >= 2 &&
-        reconstruction.NumRegImages() != ba_prev_num_reg_images &&
-        reconstruction.NumPoints3D() != ba_prev_num_points) {
-      IterativeGlobalRefinement(*options_, &mapper);
-    }
-
+          IterativeGlobalRefinement(*options_, &mapper);
+          last_global_ba_num_reg_images = reconstruction.NumRegImages();
+        }
     // If the total number of images is small then do not enforce the minimum
     // model size so that we can reconstruct small image collections.
     const size_t min_model_size =
