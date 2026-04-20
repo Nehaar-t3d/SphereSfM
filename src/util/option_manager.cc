@@ -532,6 +532,8 @@ void OptionManager::AddMapperOptions() {
                               &mapper->ba_global_max_refinements);
   AddAndRegisterDefaultOption("Mapper.ba_global_max_refinement_change",
                               &mapper->ba_global_max_refinement_change);
+  AddAndRegisterDefaultOption("Mapper.ba_global_disable",
+                              &mapper->ba_global_disable);
   AddAndRegisterDefaultOption("Mapper.ba_local_max_refinements",
                               &mapper->ba_local_max_refinements);
   AddAndRegisterDefaultOption("Mapper.ba_local_max_refinement_change",
