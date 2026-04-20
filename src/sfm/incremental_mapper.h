@@ -119,6 +119,9 @@ class IncrementalMapper {
     // If reconstruction is provided as input, fix the existing image poses.
     bool fix_existing_images = false;
 
+    // whether to run global bundle adjustment or not
+    bool ba_global_disable = false;
+
 	// Whether to process sphere cameras.
     bool sphere_camera = false;
 
@@ -135,6 +138,11 @@ class IncrementalMapper {
         ImageSelectionMethod::MIN_UNCERTAINTY;
 
     bool Check() const;
+    // The growth rates after which to perform global bundle adjustment.
+    double ba_global_images_ratio = 1.1;
+    double ba_global_points_ratio = 1.1;
+    int ba_global_images_freq = 500;
+    int ba_global_points_freq = 250000;
   };
 
   struct LocalBundleAdjustmentReport {

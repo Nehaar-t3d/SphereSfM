@@ -105,6 +105,9 @@ struct IncrementalMapperOptions {
   int ba_global_images_freq = 500;
   int ba_global_points_freq = 250000;
 
+  // Whether to disable global bundle adjustment.
+  bool ba_global_disable = false;
+  
   // Ceres solver function tolerance for global bundle adjustment
   double ba_global_function_tolerance = 0.0;
 
